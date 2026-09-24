@@ -10,7 +10,7 @@ class FER2013Dataset(torch.utils.data.Dataset):
         data = []
         labs = []
         for idx, emotion in enumerate(emotions):
-            dir = Path(path+'/'+split+'/'+emotion)
+            dir = Path(path+'/fer2013/'+split+'/'+emotion)
             for item in dir.iterdir():
                 data.append(plt.imread(item))
                 labs.append(idx)
@@ -23,3 +23,5 @@ class FER2013Dataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.x)
+
+

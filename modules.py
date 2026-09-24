@@ -50,86 +50,102 @@ class FER2013Conv(nn.Module):
 
         return x
 
-def train_one_epoch(model, loader, optimizer, criterion, epoch, epochs):
-    
+def train_one_epoch(model, loader, optimizer, criterion):
+
     model.train()
-    running_loss = 0.0
+    curr_loss = 0
 
-    pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{epochs}", leave=True)
+    batch_idx = 1
+    batches = len(loader)
 
-    for batch_idx, (x, y) in enumerate(pbar):
+    for (x, y) in loader:
         optimizer.zero_grad()
 
-        x = x.cuda(non_blocking=True)
-        y = y.cuda(non_blocking=True)
+        x = x.cuda()
+        y = y.cuda()
 
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            pred = model(x)
-            loss = criterion(pred, y)
+        pred = model(x)
+        error = criterion(pred, y)
 
-        loss.backward()
+        error.backward()
         optimizer.step()
 
-        running_loss += loss.item()
-        pbar.set_postfix({"loss": f"{running_loss / (batch_idx + 1):.6f}"})
+        curr_loss += error.item()
 
-    return running_loss / len(loader)
+        print(f"\rTrain batch :", batch_idx, '/', batches)
+        batch_idx += 1
 
+    return curr_loss/len(loader)
 
-def evaluate(model, loader, criterion):
+def eval(model, loader, optimizer, criterion, is_class):
+
     model.eval()
-    val_loss = 0.0
+    curr_loss = 0
+    correct = 0
+    total = 0
+
+    batch_idx = 1
+    batches = len(loader)
 
     with torch.no_grad():
-        for x, y in loader:
-            x = x.cuda(non_blocking=True)
-            y = y.cuda(non_blocking=True)
+        for (x, y) in loader:
 
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                pred = model(x)
-                val_loss += criterion(pred, y).item()
+            x = x.cuda()
+            y = y.cuda()
 
-    return val_loss / len(loader)
+            pred = model(x)
+            error = criterion(pred, y)
+
+            curr_loss += error.item()
+
+            print(f"\rEval batch :", batch_idx, '/', batches)
+            batch_idx += 1
+
+            preds = pred.argmax(dim=1)
+            correct += (preds == y).sum().item()
+            total += len(preds)
+
+        return curr_loss/batches, correct/total
 
 
-def train_model(model, train_loader, val_loader, optimizer, criterion, scheduler,
-                epochs, checkpoint_dir="checkpoints", label = 'best_model'):
-    history = []
+def train_model(model, train_loader, val_loader, optimizer, criterion, epochs, scheduler, output_dir, label):
 
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.set_float32_matmul_precision("high")
+    history = {
+        'train_hist': [],
+        'val_hist': [],
+        'best_train_hist': [],
+        'best_val_hist': []
+    }
 
-    Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+    best_train = np.inf
     best_val = np.inf
 
-    for epoch in range(epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, epoch, epochs)
+    for i in range(epochs):
+
+        epoch_train_loss = train_one_epoch(model, train_loader, optimizer, criterion)
         scheduler.step()
 
         torch.cuda.empty_cache()
+        
+        epoch_val_loss, epoch_acc = eval(model, val_loader, optimizer, criterion)
 
-        val_loss = evaluate(model, val_loader, criterion)
+        if epoch_train_loss < best_train:
+            best_train = epoch_train_loss
 
-        if val_loss < best_val:
-            best_val = val_loss
+        if epoch_val_loss < best_val:
+            best_val = epoch_val_loss
+
             torch.save({
-                "epoch": epoch,
+                "epoch": i,
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
-            }, f"{checkpoint_dir}/{label}.pt")
+            }, f"{output_dir}/{label}.pt")
 
-        print(
-            f"Epoch {epoch+1:03d} | "
-            f"train = {train_loss:.6f} | "
-            f"val = {val_loss:.6f} | "
-            f"best_val = {best_val:.6f}"
-        )
+        print(f"Epoch {i+1}/{epochs}    |   Train error: {epoch_train_loss} Val error: {epoch_val_loss} Accuracy: {epoch_acc} \n|   Best train loss: {best_train}   Best val loss: {best_val}")
 
-        history.append({
-            "epoch": epoch,
-            "train": train_loss,
-            "val": val_loss,
-            "best_val": best_val
-        })
-    
+        history['train_hist'].append(epoch_train_loss)
+        history['val_hist'].append(epoch_val_loss)
+        history['best_train_hist'].append(best_train)
+        history['best_val_hist'].append(best_val)
+
     return history
